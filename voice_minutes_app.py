@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """VoiceMinutes — メニューバーから音声ファイルを議事録化するアプリ"""
 
-import json
 import os
 import math
 import subprocess
@@ -35,47 +34,21 @@ def find_claude():
     return "claude"
 
 
-def find_claude_auth_env():
-    """~/.claude/sessions/ から生きているDesktopセッションを探し認証env varを返す"""
-    sessions_dir = os.path.expanduser("~/.claude/sessions")
-    if not os.path.isdir(sessions_dir):
+def load_login_shell_env():
+    """ログインシェルの環境変数を取得する（ANTHROPIC_API_KEY 等を拾う）"""
+    try:
+        r = subprocess.run(
+            ["/bin/zsh", "-l", "-c", "env"],
+            capture_output=True, text=True, timeout=10
+        )
+        env = {}
+        for line in r.stdout.splitlines():
+            if "=" in line:
+                k, _, v = line.partition("=")
+                env[k] = v
+        return env
+    except Exception:
         return {}
-    for fname in sorted(os.listdir(sessions_dir), reverse=True):
-        if not fname.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(sessions_dir, fname)) as f:
-                session = json.load(f)
-        except Exception:
-            continue
-        if session.get("entrypoint") != "claude-desktop":
-            continue
-        socket_path = session.get("messagingSocketPath", "")
-        if not socket_path or not os.path.exists(socket_path):
-            continue
-        pid = str(session.get("pid", fname.split(".")[0]))
-        # 対応する .key ファイルからpeerTokenを取得
-        peer_token = ""
-        for kf in os.listdir(sessions_dir):
-            if kf.startswith(pid + ".") and kf.endswith(".key"):
-                try:
-                    kdata = json.loads(open(os.path.join(sessions_dir, kf), "rb").read())
-                    peer_token = kdata.get("peerToken", "")
-                except Exception:
-                    pass
-                break
-        if not peer_token:
-            continue
-        return {
-            "CLAUDE_CODE_MESSAGING_SOCKET": socket_path,
-            "CLAUDE_CODE_MESSAGING_TOKEN": peer_token,
-            "CLAUDE_PID": pid,
-            "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH": "1",
-            "CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH": "1",
-            "ANTHROPIC_BASE_URL": os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
-            "CLAUDECODE": "1",
-        }
-    return {}
 
 
 def pick_files():
@@ -209,24 +182,29 @@ def run_pipeline(audio_paths, notion_url, progress):
     prompt = f"/minutes {tmp_txt}"
     if notion_url:
         prompt += f" {notion_url}"
-    # ヘッドレス実行では権限ダイアログに応答できないため事前にバイパスする
-    # （ローカルの自分のPCで、自分の音声・自分のNotionにのみ作用するため）
-    env = os.environ.copy()
+    # ログインシェルの環境変数を取得して引き継ぐ（ANTHROPIC_API_KEY 含む）
+    env = load_login_shell_env()
     env.setdefault("HOME", os.path.expanduser("~"))
-    env.update(find_claude_auth_env())
+    claude_bin = find_claude()
     r = subprocess.run(
-        [find_claude(), "-p", "--dangerously-skip-permissions", prompt],
+        [claude_bin, "-p", "--dangerously-skip-permissions", prompt],
         capture_output=True, text=True,
         env=env,
     )
     # 成功・失敗にかかわらず claude の出力を残す（格納可否の確認用）
     with open("/tmp/voice-minutes-claude.log", "w") as lf:
-        lf.write(f"cmd: {find_claude()} -p {prompt}\n")
+        lf.write(f"cmd: {claude_bin} -p {prompt}\n")
         lf.write(f"returncode: {r.returncode}\n")
         lf.write(f"--- stdout ---\n{r.stdout}\n")
         lf.write(f"--- stderr ---\n{r.stderr}\n")
     if r.returncode != 0:
-        fail(progress, "議事録生成に失敗しました", r.stderr.strip()[-80:])
+        not_logged_in = "Not logged in" in r.stdout or "Not logged in" in r.stderr
+        err_msg = "議事録生成に失敗しました"
+        err_detail = (
+            "ANTHROPIC_API_KEY が未設定です。~/.zshenv に追加してください"
+            if not_logged_in else r.stderr.strip()[-80:]
+        )
+        fail(progress, err_msg, err_detail)
         return
 
     progress.done()

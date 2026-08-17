@@ -1,0 +1,19 @@
+name: VoiceMinutes
+options:
+  bundleIdPrefix: com.akihiro
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "16.0"
+
+targets:
+  VoiceMinutes:
+    type: application
+    platform: macOS
+    sources: VoiceMinutes
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.akihiro.VoiceMinutes
+        MARKETING_VERSION: 1.0.0
+        SWIFT_VERSION: 6.0
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
